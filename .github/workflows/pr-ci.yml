@@ -1,0 +1,64 @@
+name: PR CI
+
+# Pull-request checks on GitHub-hosted runners. Main-branch builds and deploys
+# stay in .gitea/workflows on Gitea Actions.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify and qualify image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run check:seo
+      - run: npm audit --omit=dev
+      - name: Build and qualify the application image
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
+          image="commons-ci/app:$SOURCE_REVISION"
+          docker build --build-arg "SOURCE_REVISION=$SOURCE_REVISION" \
+            --label "org.opencontainers.image.revision=$SOURCE_REVISION" \
+            -t "$image" .
+          bash scripts/check-ci-image.sh "$image" "$SOURCE_REVISION"
+
+  ci-gate:
+    name: CI gate
+    if: always()
+    needs: [verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every verification job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ["RESULTS"])
+          expected = {'verify'}
+          assert set(results) == expected, results
+          for name, result in results.items():
+              assert result["result"] == "success", name + " did not pass"
+          PY
