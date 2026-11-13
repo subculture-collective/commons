@@ -12,10 +12,10 @@ import uuid
 
 APP = "commons-app"
 ROOT = Path("/srv/apps/projects/commons")
-STATE = Path.home() / ".local/state/fleet-deploy/commons"
+STATE = Path("/srv/deploy/commons/state")
 REPOSITORY = "https://git.subcult.tv/subculture-collective/commons"
-RESTIC = "sftp:onnwee@10.0.0.50:/mnt/data2/backups/nuc/restic"
-SFTP = "-i /home/onnwee/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o ServerAliveInterval=10 -o ServerAliveCountMax=2"
+RESTIC = "sftp:patrick@10.0.0.50:/mnt/data2/backups/nuc/restic"
+SFTP = "-i /home/patrick/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o ServerAliveInterval=10 -o ServerAliveCountMax=2"
 
 
 def run(args, *, timeout=35, output=None):
@@ -81,7 +81,11 @@ def qualify(image, revision):
     assert next(m for m in current["Mounts"] if m["Destination"] == "/backups")["Source"] == str(ROOT / "backups")
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
     directory = ROOT / "backups/ci-deploy" / (revision + "-" + stamp)
+    # Runs as root (sudo): hand checkpoint paths to the container user, as the
+    # unprivileged deploy account owned them when it shared the container UID.
+    owner = tuple(int(run(["docker", "exec", APP, "id", flag])) for flag in ("-u", "-g"))
     directory.mkdir(parents=True, mode=0o700)
+    os.chown(directory, *owner)
     checkpoint = {"revision": revision, "image": candidate["Id"], "previous_image": current["Image"], "stage": "backup"}
     record = directory / "qualification.json"
     def save(stage):
@@ -95,8 +99,8 @@ def qualify(image, revision):
     original = fingerprint(source)
     save("encrypted-offhost-backup")
     paths = [source, ROOT / ".env", ROOT / "current/compose.yaml", ROOT / "current/deploy", ROOT / "operations"]
-    paths += [path for path in [Path.home() / ".config/fleet-deploy/commons.json",
-                               Path.home() / ".config/fleet-deploy/commons-compose.json", Path(__file__)] if path.exists()]
+    paths += [path for path in [Path("/srv/deploy/commons/profile.json"),
+                               Path("/srv/deploy/commons/compose.json"), Path(__file__)] if path.exists()]
     events = restic(["backup", "--json", "--tag", "commons", "--tag", "ci-deploy", *map(str, paths)])
     summary = next(json.loads(line) for line in events.splitlines() if json.loads(line).get("message_type") == "summary")
     snapshot = summary["snapshot_id"]
@@ -105,10 +109,12 @@ def qualify(image, revision):
     recovered = directory / "offhost-restored.sqlite"
     with recovered.open("xb") as output:
         restic(["dump", snapshot, str(source)], output=output)
+    os.chown(recovered, *owner)
     assert file_hash(source) == file_hash(recovered)
     save("isolated-native-restore")
     restored = directory / "restored/commons.sqlite"
     restored.parent.mkdir(mode=0o700)
+    os.chown(restored.parent, *owner)
     common = ["docker", "run", "--rm", "--network", "none", "--read-only",
               "--tmpfs", "/tmp:uid=1000,gid=1000,mode=1777,size=32m",
               "--mount", "type=bind,src=" + str(recovered) + ",dst=/backup.sqlite,readonly",

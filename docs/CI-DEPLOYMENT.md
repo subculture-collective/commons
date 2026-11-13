@@ -17,8 +17,8 @@ bytes, checks public health and compares the selected favicon after activation.
 The existing single replica, `commons-app`, stays on NUC with `commons_data`, the
 backups bind mount, network, ingress, runtime limits and unprivileged user.
 Registration is operator-owned under
-`/home/onnwee/.config/fleet-deploy/commons.json`, with its qualified Compose
-baseline in `commons-compose.json` beside it. Runtime guards refuse configuration
+`/srv/deploy/commons/profile.json`, with its qualified Compose baseline in
+`compose.json` beside it. Runtime guards refuse configuration
 drift. Keep environment references bound to `/srv/apps/projects/commons/.env`;
 never copy its Brevo credential into the baseline, source, CI or image.
 The data hook also checks the registered environment-file hash before and after
@@ -30,9 +30,11 @@ current main and validates the repository/revision labels. It retains one
 accepted image configuration per commit; a retry reuses that image. Key custody
 belongs to the homelab operator; initial rotation is due 2027-02-03.
 
-Install `scripts/predeploy-ci.py` from the reviewed merged commit in versioned
-operator storage. The profile's fixed `pre_deploy_command` selects that exact
-file. If CI arrives before installation, the hook fails before activation; finish
+Install `scripts/predeploy-ci.py` from the reviewed merged commit under
+`/usr/local/lib/fleet-deploy/commons/<sha256>/`. The profile's fixed
+`pre_deploy_command` runs that exact file as root through `sudo -n`, because the
+hook hands its checkpoint files to the app container's user, which differs from
+the deploy account. If CI arrives before installation, the hook fails before activation; finish
 installation and retry the current main job. Preserve the old image and receipts.
 
 ## Data qualification before each activation
